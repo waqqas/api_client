@@ -43,8 +43,8 @@ auto async_resolve_host(tcp::resolver &resolver, const std::string &host, const 
     // coroutines) the return type would be std::size_t, and when the completion
     // token is boost::asio::use_future it would be std::future<std::size_t>.
     -> typename boost::asio::async_result<typename std::decay<CompletionToken>::type,
-                                          void(boost::system::error_code,
-                                               tcp::resolver::results_type)>::return_type
+                                          void(const boost::system::error_code &,
+                                               const tcp::resolver::results_type &)>::return_type
 {
   // When delegating to the underlying operation we must take care to perfectly
   // forward the completion token. This ensures that our operation works
@@ -54,7 +54,7 @@ auto async_resolve_host(tcp::resolver &resolver, const std::string &host, const 
 }
 
 template <typename CompletionToken>
-auto async_connect_host(beast::tcp_stream &stream, tcp::resolver::results_type results,
+auto async_connect_host(beast::tcp_stream &stream, const tcp::resolver::results_type &results,
                         CompletionToken &&token)
     // The return type of the initiating function is deduced from the combination
     // of CompletionToken type and the completion handler's signature. When the
@@ -64,7 +64,8 @@ auto async_connect_host(beast::tcp_stream &stream, tcp::resolver::results_type r
     // token is boost::asio::use_future it would be std::future<std::size_t>.
     -> typename boost::asio::async_result<
         typename std::decay<CompletionToken>::type,
-        void(boost::system::error_code, tcp::resolver::results_type::endpoint_type)>::return_type
+        void(const boost::system::error_code &,
+             const tcp::resolver::results_type::endpoint_type &)>::return_type
 {
 
   // Set a timeout on the operation
@@ -86,32 +87,33 @@ void test_callback()
   tcp::resolver resolver(io_context);
 
   // Test our asynchronous operation using a lambda as a callback.
-  async_resolve_host(
-      resolver, "www.google.com", "80",
-      [&io_context](const boost::system::error_code &error, tcp::resolver::results_type results) {
-        if (!error)
-        {
-          tcp::resolver::results_type::const_iterator it;
-          for (it = results.begin(); it != results.end(); ++it)
-          {
-            std::cout << "result1: " << it->host_name() << std::endl;
-          }
+  async_resolve_host(resolver, "www.google.com", "80",
+                     [&io_context](const boost::system::error_code &  error,
+                                   const tcp::resolver::results_type &results) {
+                       if (!error)
+                       {
+                         tcp::resolver::results_type::const_iterator it;
+                         for (it = results.begin(); it != results.end(); ++it)
+                         {
+                           std::cout << "result1: " << it->host_name() << std::endl;
+                         }
 
-          beast::tcp_stream stream(io_context);
-          async_connect_host(stream, results,
-                             [](const boost::system::error_code &error,
-                                tcp::resolver::results_type::endpoint_type) {
+                         beast::tcp_stream stream(io_context);
+                         async_connect_host(
+                             stream, results,
+                             [](const boost::system::error_code &                 error,
+                                const tcp::resolver::results_type::endpoint_type &endpoint) {
                                if (!error)
                                {
-                                 std::cout << "connected" << std::endl;
+                                 std::cout << "connected at " << endpoint << std::endl;
                                }
                              });
-        }
-        else
-        {
-          std::cout << "Error: " << error.message() << "\n";
-        }
-      });
+                       }
+                       else
+                       {
+                         std::cout << "Error: " << error.message() << "\n";
+                       }
+                     });
 
   io_context.run();
 }
@@ -135,7 +137,7 @@ void test_future()
   try
   {
     // Get the result of the operation.
-    tcp::resolver::results_type results = r.get();
+    const tcp::resolver::results_type &results = r.get();
 
     std::cout << results.size() << " number of results\n";
     tcp::resolver::results_type::const_iterator it;
@@ -153,7 +155,7 @@ void test_future()
 
     try
     {
-      tcp::resolver::results_type::endpoint_type endpoint = c.get();
+      const tcp::resolver::results_type::endpoint_type &endpoint = c.get();
 
       std::cout << endpoint << std::endl;
     }
