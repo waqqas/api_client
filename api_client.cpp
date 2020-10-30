@@ -53,6 +53,30 @@ auto async_resolve_host(tcp::resolver &resolver, const std::string &host, const 
   return resolver.async_resolve(host, port, std::forward<CompletionToken>(token));
 }
 
+template <typename CompletionToken>
+auto async_connect_host(beast::tcp_stream &stream, tcp::resolver::results_type results,
+                        CompletionToken &&token)
+    // The return type of the initiating function is deduced from the combination
+    // of CompletionToken type and the completion handler's signature. When the
+    // completion token is a simple callback, the return type is void. However,
+    // when the completion token is boost::asio::yield_context (used for stackful
+    // coroutines) the return type would be std::size_t, and when the completion
+    // token is boost::asio::use_future it would be std::future<std::size_t>.
+    -> typename boost::asio::async_result<
+        typename std::decay<CompletionToken>::type,
+        void(boost::system::error_code, tcp::resolver::results_type::endpoint_type)>::return_type
+{
+
+  // Set a timeout on the operation
+  stream.expires_after(std::chrono::seconds(10));
+
+  // When delegating to the underlying operation we must take care to perfectly
+  // forward the completion token. This ensures that our operation works
+  // correctly with move-only function objects as callbacks, as well as other
+  // completion token types.
+  return stream.async_connect(results, std::forward<CompletionToken>(token));
+}
+
 //------------------------------------------------------------------------------
 
 void test_callback()
@@ -64,10 +88,24 @@ void test_callback()
   // Test our asynchronous operation using a lambda as a callback.
   async_resolve_host(
       resolver, "www.google.com", "80",
-      [](const boost::system::error_code &error, tcp::resolver::results_type results) {
+      [&io_context](const boost::system::error_code &error, tcp::resolver::results_type results) {
         if (!error)
         {
-          std::cout << results.size() << " number of results\n";
+          tcp::resolver::results_type::const_iterator it;
+          for (it = results.begin(); it != results.end(); ++it)
+          {
+            std::cout << "result1: " << it->host_name() << std::endl;
+          }
+
+          beast::tcp_stream stream(io_context);
+          async_connect_host(stream, results,
+                             [](const boost::system::error_code &error,
+                                tcp::resolver::results_type::endpoint_type) {
+                               if (!error)
+                               {
+                                 std::cout << "connected" << std::endl;
+                               }
+                             });
         }
         else
         {
@@ -89,7 +127,7 @@ void test_future()
   // Test our asynchronous operation using the use_future completion token.
   // This token causes the operation's initiating function to return a future,
   // which may be used to synchronously wait for the result of the operation.
-  std::future<tcp::resolver::results_type> f =
+  std::future<tcp::resolver::results_type> r =
       async_resolve_host(resolver, "www.google.com", "80", boost::asio::use_future);
 
   io_context.run();
@@ -97,8 +135,32 @@ void test_future()
   try
   {
     // Get the result of the operation.
-    tcp::resolver::results_type n = f.get();
-    std::cout << n.size() << " number of results\n";
+    tcp::resolver::results_type results = r.get();
+
+    std::cout << results.size() << " number of results\n";
+    tcp::resolver::results_type::const_iterator it;
+    for (it = results.begin(); it != results.end(); ++it)
+    {
+      std::cout << "result2: " << it->host_name() << std::endl;
+    }
+
+    beast::tcp_stream stream(io_context);
+
+    std::future<tcp::resolver::results_type::endpoint_type> c =
+        async_connect_host(stream, results, boost::asio::use_future);
+
+    io_context.run();
+
+    try
+    {
+      tcp::resolver::results_type::endpoint_type endpoint = c.get();
+
+      std::cout << endpoint << std::endl;
+    }
+    catch (const std::exception &e)
+    {
+      std::cout << "Error: " << e.what() << "\n";
+    }
   }
   catch (const std::exception &e)
   {
