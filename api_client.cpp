@@ -48,6 +48,18 @@ struct async_resolve_initiation
   }
 };
 
+template <typename CompletionToken>
+auto async_resolve_host(tcp::resolver &resolver, const std::string &host, const std::string &port,
+                        CompletionToken &&token) ->
+    typename boost::asio::async_result<typename std::decay<CompletionToken>::type,
+                                       void(const boost::system::error_code &,
+                                            const tcp::resolver::results_type &)>::return_type
+{
+  return boost::asio::async_initiate<CompletionToken, void(const boost::system::error_code &,
+                                                           const tcp::resolver::results_type &)>(
+      async_resolve_initiation(), token, std::ref(resolver), host, port);
+}
+
 struct async_connect_initiation
 {
   template <typename CompletionHandler>
@@ -64,18 +76,6 @@ struct async_connect_initiation
 };
 
 template <typename CompletionToken>
-auto async_resolve_host(tcp::resolver &resolver, const std::string &host, const std::string &port,
-                        CompletionToken &&token) ->
-    typename boost::asio::async_result<typename std::decay<CompletionToken>::type,
-                                       void(const boost::system::error_code &,
-                                            const tcp::resolver::results_type &)>::return_type
-{
-  return boost::asio::async_initiate<CompletionToken, void(const boost::system::error_code &,
-                                                           const tcp::resolver::results_type &)>(
-      async_resolve_initiation(), token, std::ref(resolver), host, port);
-}
-
-template <typename CompletionToken>
 auto async_connect_host(beast::tcp_stream &stream, const tcp::resolver::results_type &results,
                         CompletionToken &&token) ->
     typename boost::asio::async_result<
@@ -88,42 +88,79 @@ auto async_connect_host(beast::tcp_stream &stream, const tcp::resolver::results_
                                           const tcp::resolver::results_type::endpoint_type &)>(
       async_connect_initiation(), token, std::ref(stream), results);
 }
+
+struct async_connect_initiation2
+{
+  std::unique_ptr<beast::tcp_stream> stream_;
+  std::unique_ptr<tcp::resolver>     resolver_;
+  const std::string &                host_;
+  const std::string &                port_;
+
+  enum
+  {
+    starting,
+    resolving,
+    connecting
+  } state_;
+
+  template <typename Self>
+  void operator()(Self &self, const boost::system::error_code &error,
+                  const tcp::resolver::results_type::endpoint_type &endpoint)
+  {
+    self.complete(error);
+  }
+
+  template <typename Self>
+  void operator()(Self &self, const boost::system::error_code &error,
+                  const tcp::resolver::results_type &results)
+
+  {
+    if (!error)
+    {
+      stream_->async_connect(results, std::move(self));
+    }
+  }
+
+  template <typename Self>
+  void operator()(Self &self)
+  {
+    resolver_->async_resolve(host_, port_, std::move(self));
+  }
+};
+
+template <typename CompletionToken>
+auto async_resolve_and_connect(boost::asio::io_context &io, const std::string &host,
+                               const std::string &port, CompletionToken &&token) ->
+    typename boost::asio::async_result<typename std::decay<CompletionToken>::type,
+                                       void(const boost::system::error_code &)>::return_type
+{
+
+  std::unique_ptr<beast::tcp_stream> stream   = std::make_unique<beast::tcp_stream>(io);
+  std::unique_ptr<tcp::resolver>     resolver = std::make_unique<tcp::resolver>(io);
+
+  return boost::asio::async_compose<CompletionToken, void(const boost::system::error_code &)>(
+      async_connect_initiation2{std::move(stream), std::move(resolver), host, port,
+                                async_connect_initiation2::starting},
+      token);
+}
+
 //------------------------------------------------------------------------------
 
 void test_callback()
 {
   boost::asio::io_context io_context;
 
-  tcp::resolver resolver(io_context);
-
-  // Test our asynchronous operation using a lambda as a callback.
-  async_resolve_host(resolver, "www.google.com", "80",
-                     [&io_context](const boost::system::error_code &  error,
-                                   const tcp::resolver::results_type &results) {
-                       if (!error)
-                       {
-                         tcp::resolver::results_type::const_iterator it;
-                         for (it = results.begin(); it != results.end(); ++it)
-                         {
-                           std::cout << "result1: " << it->host_name() << std::endl;
-                         }
-
-                         beast::tcp_stream stream(io_context);
-                         async_connect_host(
-                             stream, results,
-                             [](const boost::system::error_code &                 error,
-                                const tcp::resolver::results_type::endpoint_type &endpoint) {
-                               if (!error)
-                               {
-                                 std::cout << "connected at " << endpoint << std::endl;
-                               }
-                             });
-                       }
-                       else
-                       {
-                         std::cout << "Error: " << error.message() << "\n";
-                       }
-                     });
+  async_resolve_and_connect(io_context, "www.google.com", "80",
+                            [&io_context](const boost::system::error_code &error) {
+                              if (!error)
+                              {
+                                std::cout << "connected " << std::endl;
+                              }
+                              else
+                              {
+                                std::cout << "Error: " << error.message() << "\n";
+                              }
+                            });
 
   io_context.run();
 }
@@ -134,45 +171,16 @@ void test_future()
 {
   boost::asio::io_context io_context;
 
-  tcp::resolver resolver(io_context);
-
-  // Test our asynchronous operation using the use_future completion token.
-  // This token causes the operation's initiating function to return a future,
-  // which may be used to synchronously wait for the result of the operation.
-  std::future<tcp::resolver::results_type> r =
-      async_resolve_host(resolver, "www.google.com", "80", boost::asio::use_future);
+  std::future<void> c =
+      async_resolve_and_connect(io_context, "www.google.com", "80", boost::asio::use_future);
 
   io_context.run();
 
   try
   {
-    // Get the result of the operation.
-    const tcp::resolver::results_type &results = r.get();
+    c.get();
 
-    std::cout << results.size() << " number of results\n";
-    tcp::resolver::results_type::const_iterator it;
-    for (it = results.begin(); it != results.end(); ++it)
-    {
-      std::cout << "result2: " << it->host_name() << std::endl;
-    }
-
-    beast::tcp_stream stream(io_context);
-
-    std::future<tcp::resolver::results_type::endpoint_type> c =
-        async_connect_host(stream, results, boost::asio::use_future);
-
-    io_context.run();
-
-    try
-    {
-      const tcp::resolver::results_type::endpoint_type &endpoint = c.get();
-
-      std::cout << endpoint << std::endl;
-    }
-    catch (const std::exception &e)
-    {
-      std::cout << "Error: " << e.what() << "\n";
-    }
+    std::cout << "connected" << std::endl;
   }
   catch (const std::exception &e)
   {
