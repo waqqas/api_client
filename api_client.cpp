@@ -92,15 +92,15 @@ auto async_connect_host(beast::tcp_stream &stream, const tcp::resolver::results_
 
 struct async_connect_initiation2
 {
-  beast::tcp_stream &            stream_;
-  std::unique_ptr<tcp::resolver> resolver_;
-  const std::string &            host_;
-  const std::string &            port_;
+  beast::tcp_stream &stream_;
+  tcp::resolver &    resolver_;
+  const std::string &host_;
+  const std::string &port_;
 
   template <typename Self>
   void operator()(Self &self)
   {
-    resolver_->async_resolve(host_, port_, std::move(self));
+    resolver_.async_resolve(host_, port_, std::move(self));
   }
 
   template <typename Self>
@@ -126,48 +126,59 @@ struct async_connect_initiation2
   }
 };
 
-template <typename CompletionToken>
-auto async_resolve_and_connect(beast::tcp_stream &stream, const std::string &host,
-                               const std::string &port, CompletionToken &&token) ->
-    typename boost::asio::async_result<
-        typename std::decay<CompletionToken>::type,
-        void(const boost::system::error_code &,
-             std::optional<tcp::resolver::results_type::endpoint_type>)>::return_type
+struct api_client
 {
+  boost::asio::io_context &io_;
+  beast::tcp_stream        stream_;
+  tcp::resolver            resolver_;
+  const std::string        base_url_;
+  const std::string        port_;
 
-  std::unique_ptr<tcp::resolver> resolver = std::make_unique<tcp::resolver>(stream.get_executor());
+  api_client(boost::asio::io_context &io, const std::string &base_url)
+    : io_(io)
+    , stream_(io)
+    , resolver_(io)
+    , base_url_(base_url)
+    , port_("80")
+  {}
+  template <typename CompletionToken>
+  auto async_resolve_and_connect(CompletionToken &&token) -> typename boost::asio::async_result<
+      typename std::decay<CompletionToken>::type,
+      void(const boost::system::error_code &,
+           std::optional<tcp::resolver::results_type::endpoint_type>)>::return_type
+  {
 
-  return boost::asio::async_compose<
-      CompletionToken, void(const boost::system::error_code &,
-                            std::optional<tcp::resolver::results_type::endpoint_type>)>(
-      async_connect_initiation2{
-          stream,
-          std::move(resolver),
-          host,
-          port,
-      },
-      token);
-}
-
+    return boost::asio::async_compose<
+        CompletionToken, void(const boost::system::error_code &,
+                              std::optional<tcp::resolver::results_type::endpoint_type>)>(
+        async_connect_initiation2{
+            stream_,
+            resolver_,
+            base_url_,
+            port_,
+        },
+        token);
+  }
+};
 //------------------------------------------------------------------------------
 
 void test_callback()
 {
   boost::asio::io_context io_context;
 
-  beast::tcp_stream stream(io_context);
+  api_client client(io_context, "www.google.com");
 
-  async_resolve_and_connect(stream, "www.google.com", "80",
-                            [&io_context](const boost::system::error_code &error, auto endpoint) {
-                              if (!error)
-                              {
-                                std::cout << "connected at " << *endpoint << std::endl;
-                              }
-                              else
-                              {
-                                std::cout << "Error: " << error.message() << "\n";
-                              }
-                            });
+  client.async_resolve_and_connect(
+      [&io_context](const boost::system::error_code &error, auto endpoint) {
+        if (!error)
+        {
+          std::cout << "connected at " << *endpoint << std::endl;
+        }
+        else
+        {
+          std::cout << "Error: " << error.message() << "\n";
+        }
+      });
 
   io_context.run();
 }
@@ -177,10 +188,8 @@ void test_callback()
 void test_future()
 {
   boost::asio::io_context io_context;
-  beast::tcp_stream       stream(io_context);
-
-  std::future c =
-      async_resolve_and_connect(stream, "www.google.com", "80", boost::asio::use_future);
+  api_client              client(io_context, "www.google.com");
+  std::future             c = client.async_resolve_and_connect(boost::asio::use_future);
 
   io_context.run();
 
