@@ -19,6 +19,7 @@ using boost::asio::ip::tcp;
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace beast = boost::beast;          // from <boost/beast.hpp>
@@ -96,18 +97,10 @@ struct async_connect_initiation2
   const std::string &                host_;
   const std::string &                port_;
 
-  enum
-  {
-    starting,
-    resolving,
-    connecting
-  } state_;
-
   template <typename Self>
-  void operator()(Self &self, const boost::system::error_code &error,
-                  const tcp::resolver::results_type::endpoint_type &endpoint)
+  void operator()(Self &self)
   {
-    self.complete(error);
+    resolver_->async_resolve(host_, port_, std::move(self));
   }
 
   template <typename Self>
@@ -119,28 +112,41 @@ struct async_connect_initiation2
     {
       stream_->async_connect(results, std::move(self));
     }
+    else
+    {
+      self.complete(error, std::nullopt);
+    }
   }
 
   template <typename Self>
-  void operator()(Self &self)
+  void operator()(Self &self, const boost::system::error_code &error,
+                  const tcp::resolver::results_type::endpoint_type &endpoint)
   {
-    resolver_->async_resolve(host_, port_, std::move(self));
+    self.complete(error, std::optional<tcp::resolver::results_type::endpoint_type>(endpoint));
   }
 };
 
 template <typename CompletionToken>
 auto async_resolve_and_connect(boost::asio::io_context &io, const std::string &host,
                                const std::string &port, CompletionToken &&token) ->
-    typename boost::asio::async_result<typename std::decay<CompletionToken>::type,
-                                       void(const boost::system::error_code &)>::return_type
+    typename boost::asio::async_result<
+        typename std::decay<CompletionToken>::type,
+        void(const boost::system::error_code &,
+             std::optional<tcp::resolver::results_type::endpoint_type>)>::return_type
 {
 
   std::unique_ptr<beast::tcp_stream> stream   = std::make_unique<beast::tcp_stream>(io);
   std::unique_ptr<tcp::resolver>     resolver = std::make_unique<tcp::resolver>(io);
 
-  return boost::asio::async_compose<CompletionToken, void(const boost::system::error_code &)>(
-      async_connect_initiation2{std::move(stream), std::move(resolver), host, port,
-                                async_connect_initiation2::starting},
+  return boost::asio::async_compose<
+      CompletionToken, void(const boost::system::error_code &,
+                            std::optional<tcp::resolver::results_type::endpoint_type>)>(
+      async_connect_initiation2{
+          std::move(stream),
+          std::move(resolver),
+          host,
+          port,
+      },
       token);
 }
 
@@ -150,17 +156,19 @@ void test_callback()
 {
   boost::asio::io_context io_context;
 
-  async_resolve_and_connect(io_context, "www.google.com", "80",
-                            [&io_context](const boost::system::error_code &error) {
-                              if (!error)
-                              {
-                                std::cout << "connected " << std::endl;
-                              }
-                              else
-                              {
-                                std::cout << "Error: " << error.message() << "\n";
-                              }
-                            });
+  async_resolve_and_connect(
+      io_context, "www.google.com", "80",
+      [&io_context](const boost::system::error_code &                         error,
+                    std::optional<tcp::resolver::results_type::endpoint_type> endpoint) {
+        if (!error)
+        {
+          std::cout << "connected at " << *endpoint << std::endl;
+        }
+        else
+        {
+          std::cout << "Error: " << error.message() << "\n";
+        }
+      });
 
   io_context.run();
 }
@@ -171,16 +179,16 @@ void test_future()
 {
   boost::asio::io_context io_context;
 
-  std::future<void> c =
+  std::future c =
       async_resolve_and_connect(io_context, "www.google.com", "80", boost::asio::use_future);
 
   io_context.run();
 
   try
   {
-    c.get();
+    std::optional<tcp::resolver::results_type::endpoint_type> endpoint = c.get();
 
-    std::cout << "connected" << std::endl;
+    std::cout << "connected at " << *endpoint << std::endl;
   }
   catch (const std::exception &e)
   {
