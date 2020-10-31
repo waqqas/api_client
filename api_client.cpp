@@ -156,19 +156,17 @@ void test_callback()
 {
   boost::asio::io_context io_context;
 
-  async_resolve_and_connect(
-      io_context, "www.google.com", "80",
-      [&io_context](const boost::system::error_code &                         error,
-                    std::optional<tcp::resolver::results_type::endpoint_type> endpoint) {
-        if (!error)
-        {
-          std::cout << "connected at " << *endpoint << std::endl;
-        }
-        else
-        {
-          std::cout << "Error: " << error.message() << "\n";
-        }
-      });
+  async_resolve_and_connect(io_context, "www.google.com", "80",
+                            [&io_context](const boost::system::error_code &error, auto endpoint) {
+                              if (!error)
+                              {
+                                std::cout << "connected at " << *endpoint << std::endl;
+                              }
+                              else
+                              {
+                                std::cout << "Error: " << error.message() << "\n";
+                              }
+                            });
 
   io_context.run();
 }
@@ -186,7 +184,7 @@ void test_future()
 
   try
   {
-    std::optional<tcp::resolver::results_type::endpoint_type> endpoint = c.get();
+    auto endpoint = c.get();
 
     std::cout << "connected at " << *endpoint << std::endl;
   }
