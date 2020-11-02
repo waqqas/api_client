@@ -71,9 +71,3 @@ project(api_client_example)
 add_executable(${PROJECT_NAME} api_client_example.cpp)
 find_package(Boost REQUIRED COMPONENTS system)
 target_link_libraries(${PROJECT_NAME} Boost::system)
-
-project(api_client2)
-
-add_executable(${PROJECT_NAME} main2.cpp)
-find_package(Boost REQUIRED COMPONENTS system)
-target_link_libraries(${PROJECT_NAME} Boost::system)
