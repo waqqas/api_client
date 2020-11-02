@@ -27,13 +27,6 @@ namespace http  = beast::http;           // from <boost/beast/http.hpp>
 namespace net   = boost::asio;           // from <boost/asio.hpp>
 using tcp       = boost::asio::ip::tcp;  // from <boost/asio/ip/tcp.hpp>
 
-//------------------------------------------------------------------------------
-
-// This is the simplest example of a composed asynchronous operation, where we
-// simply repackage an existing operation. The asynchronous operation
-// requirements are met by delegating responsibility to the underlying
-// operation.
-
 struct async_resolve_initiation
 {
   template <typename CompletionHandler>
@@ -92,10 +85,29 @@ auto async_connect_host(beast::tcp_stream &stream, const tcp::resolver::results_
 
 struct async_connect_initiation2
 {
+  // using io_work_type = typename std::decay<decltype(
+  //     boost::asio::prefer(std::declval<beast::tcp_stream::executor_type>(),
+  //                         boost::asio::execution::outstanding_work.tracked))>::type;
+
   beast::tcp_stream &stream_;
   tcp::resolver &    resolver_;
   const std::string &host_;
   const std::string &port_;
+  // boost::asio::executor_work_guard<beast::tcp_stream::executor_type> work_;
+
+  // io_work_type io_work_;
+
+  async_connect_initiation2(beast::tcp_stream &stream, tcp::resolver &resolver,
+                            const std::string &host, const std::string &port)
+    : stream_(stream)
+    , resolver_(resolver)
+    , host_(host)
+    , port_(port)
+  // , work_(stream_.get_executor())
+  {}
+
+  ~async_connect_initiation2()
+  {}
 
   template <typename Self>
   void operator()(Self &self)
@@ -142,7 +154,6 @@ struct async_request
     : stream_(stream)
     , req_(std::move(req))
     , state_(request_in_progress)
-
   {
     res_ = std::make_shared<http::response<http::string_body>>();
   }
@@ -167,8 +178,8 @@ struct async_request
         state_ = waiting_for_response;
         break;
       case waiting_for_response:
-        // std::cout << *res_ << std::endl;
         self.complete(error);
+        break;
       }
     }
     else
@@ -180,17 +191,16 @@ struct async_request
 
 struct api_client
 {
-  boost::asio::io_context &io_;
-  beast::tcp_stream        stream_;
-  tcp::resolver            resolver_;
-  const std::string        base_url_;
-  const std::string        port_;
+  net::io_context & io_;
+  beast::tcp_stream stream_;
+  tcp::resolver     resolver_;
+  const std::string base_url_;
+  const std::string port_;
 
-  api_client(boost::asio::io_context &io, const std::string &base_url,
-             const std::string &port = "80")
+  api_client(net::io_context &io, const std::string &base_url, const std::string &port = "80")
     : io_(io)
-    , stream_(io)
-    , resolver_(io)
+    , stream_(net::make_strand(io))
+    , resolver_(net::make_strand(io))
     , base_url_(base_url)
     , port_(port)
   {}
@@ -207,13 +217,7 @@ struct api_client
     return boost::asio::async_compose<
         CompletionToken, void(const boost::system::error_code &,
                               std::optional<tcp::resolver::results_type::endpoint_type>)>(
-        async_connect_initiation2{
-            stream_,
-            resolver_,
-            base_url_,
-            port_,
-        },
-        token);
+        async_connect_initiation2(std::ref(stream_), resolver_, base_url_, port_), token);
   }
 
   template <typename CompletionToken>
@@ -230,31 +234,73 @@ struct api_client
     req->set(http::field::host, base_url_);
 
     return boost::asio::async_compose<CompletionToken, void(const boost::system::error_code &)>(
-        async_request(stream_, std::move(req)), token);
+        async_request(std::ref(stream_), std::move(req)), token);
+  }
+
+  template <typename CompletionToken>
+  auto async_resolve_host(CompletionToken &&token) ->
+      typename boost::asio::async_result<typename std::decay<CompletionToken>::type,
+                                         void(const boost::system::error_code &,
+                                              const tcp::resolver::results_type &)>::return_type
+  {
+    return boost::asio::async_initiate<CompletionToken, void(const boost::system::error_code &,
+                                                             const tcp::resolver::results_type &)>(
+        async_resolve_initiation(), token, std::ref(resolver_), base_url_, port_);
+  }
+
+  template <typename CompletionToken>
+  auto async_connect_host(const tcp::resolver::results_type &results, CompletionToken &&token) ->
+      typename boost::asio::async_result<
+          typename std::decay<CompletionToken>::type,
+          void(const boost::system::error_code &,
+               const tcp::resolver::results_type::endpoint_type &)>::return_type
+  {
+    return boost::asio::async_initiate<CompletionToken,
+                                       void(const boost::system::error_code &,
+                                            const tcp::resolver::results_type::endpoint_type &)>(
+        async_connect_initiation(), token, std::ref(stream_), results);
   }
 };
 //------------------------------------------------------------------------------
 
 void test_callback()
 {
-  boost::asio::io_context io_context;
+  net::io_context io_context;
 
   api_client client(io_context, "www.google.com");
 
-  client.async_resolve_and_connect(
-      [&client](const boost::system::error_code &error, auto endpoint) {
-        if (!error)
+  client.async_resolve_host(
+      [&client](const boost::system::error_code &ec, const tcp::resolver::results_type &results) {
+        if (!ec)
         {
-          std::cout << "connected at " << *endpoint << std::endl;
-          client.async_get("/", [](const boost::system::error_code &error) {
-            std::cout << "async_get: " << error.message() << "\n";
-          });
-        }
-        else
-        {
-          std::cout << "Error: " << error.message() << "\n";
+          client.async_connect_host(
+              results, [&client](const boost::system::error_code &                 ec,
+                                 const tcp::resolver::results_type::endpoint_type &endpoint) {
+                if (!ec)
+                {
+                  std::cout << "connected at " << endpoint << std::endl;
+                  client.async_get("/", [](const boost::system::error_code &ec) {
+                    std::cout << "async_get: " << ec.message() << "\n";
+                  });
+                }
+              });
         }
       });
+
+  // client.async_resolve_and_connect(
+  //     [&client](const boost::system::error_code &error, auto endpoint) {
+  //       if (!error)
+  //       {
+  //         std::cout << "connected at " << *endpoint << std::endl;
+  //         client.async_get("/", [](const boost::system::error_code &error) {
+  //           std::cout << "async_get: " << error.message() << "\n";
+  //         });
+  //       }
+  //       else
+  //       {
+  //         std::cout << "Error: " << error.message() << "\n";
+  //       }
+  //     });
 
   io_context.run();
 }
@@ -263,9 +309,9 @@ void test_callback()
 
 void test_future()
 {
-  boost::asio::io_context io_context;
-  api_client              client(io_context, "www.google.com");
-  std::future             c = client.async_resolve_and_connect(boost::asio::use_future);
+  net::io_context io_context;
+  api_client      client(io_context, "www.google.com");
+  std::future     c = client.async_resolve_and_connect(boost::asio::use_future);
 
   io_context.run();
 
@@ -294,7 +340,7 @@ void test_future()
 
 int main(void)
 {
-  // test_callback();
-  test_future();
+  test_callback();
+  // test_future();
   return 0;
 }
