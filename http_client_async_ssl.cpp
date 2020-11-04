@@ -13,13 +13,13 @@
 //
 //------------------------------------------------------------------------------
 
-#include "root_certificates.hpp"
-
 #include <boost/asio/strand.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
 #include <boost/beast/version.hpp>
+#include <boost/certify/extensions.hpp>
+#include <boost/certify/https_verification.hpp>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
@@ -183,12 +183,10 @@ int main(int argc, char **argv)
   // The SSL context is required, and holds certificates
   ssl::context ctx{ssl::context::tlsv12_client};
 
-  // This holds the root certificate used for verification
-  load_root_certificates(ctx);
-
   // Verify the remote server's certificate
   ctx.set_verify_mode(ssl::verify_peer);
-
+  ctx.set_default_verify_paths();
+  boost::certify::enable_native_https_server_verification(ctx);
   // Launch the asynchronous operation
   // The session is constructed with a strand to
   // ensure that handlers do not execute concurrently.
