@@ -71,3 +71,31 @@ project(api_client_example)
 add_executable(${PROJECT_NAME} api_client_example.cpp)
 find_package(Boost REQUIRED COMPONENTS system)
 target_link_libraries(${PROJECT_NAME} Boost::system)
+
+
+project(async_client_ssl)
+
+add_executable(${PROJECT_NAME} async_client_ssl.cpp)
+find_package(Boost REQUIRED COMPONENTS system)
+target_link_libraries(${PROJECT_NAME} Boost::system)
+
+find_package(OpenSSL REQUIRED)
+target_link_libraries(${PROJECT_NAME} OpenSSL::SSL OpenSSL::Crypto)
+
+project(http_client_async_ssl)
+
+add_executable(${PROJECT_NAME} http_client_async_ssl.cpp)
+find_package(Boost REQUIRED COMPONENTS system)
+target_link_libraries(${PROJECT_NAME} Boost::system)
+
+find_package(OpenSSL REQUIRED)
+target_link_libraries(${PROJECT_NAME} OpenSSL::SSL OpenSSL::Crypto)
+
+project(http_client_async_ssl_system_executor)
+
+add_executable(${PROJECT_NAME} http_client_async_ssl_system_executor.cpp)
+find_package(Boost REQUIRED COMPONENTS system)
+target_link_libraries(${PROJECT_NAME} Boost::system)
+
+find_package(OpenSSL REQUIRED)
+target_link_libraries(${PROJECT_NAME} OpenSSL::SSL OpenSSL::Crypto)
